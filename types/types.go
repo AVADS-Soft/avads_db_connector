@@ -1,0 +1,42 @@
+package types
+
+const (
+	BOOL = iota
+	SINT
+	INT
+	DINT
+	LINT
+	USINT
+	UINT
+	UDINT
+	ULINT
+	REAL
+	LREAL
+	TIME
+	LTIME
+	DATE
+	LDATE
+	TIME_OF_DAY
+	LTIME_OF_DAY
+	DATE_AND_TIME
+	LDATE_AND_TIME
+	STRING
+	WSTRING
+	CHAR
+	WCHAR
+	BYTE
+	WORD
+	DWORD
+	LWORD
+	SANY
+	BANY
+	TOD  = TIME_OF_DAY
+	LTOD = LTIME_OF_DAY
+	DT   = DATE_AND_TIME
+	LDT  = LDATE_AND_TIME
+)
+
+const (
+	SimpleClass = iota
+	BlobClass
+)
