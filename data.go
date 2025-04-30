@@ -3,10 +3,12 @@ package avads_db_connector
 import (
 	"encoding/binary"
 	"errors"
+	"sort"
 	"sync"
 
-	"avads_db_connector/flow_buf"
-	"avads_db_connector/types"
+	"github.com/AVADS-Soft/avads_db_connector/flow_buf"
+
+	"github.com/AVADS-Soft/avads_db_connector/types"
 )
 
 const (
@@ -32,9 +34,17 @@ var poolBytes4 = sync.Pool{
 	},
 }
 
+type CacheRowT struct {
+	class byte
+	t     int64
+	q     uint32
+	value interface{}
+}
+
 type RowsCacheT struct {
-	count int
-	cache []byte
+	series map[int64][]CacheRowT
+	count  int
+	cache  []byte
 }
 
 type RowT struct {
@@ -64,7 +74,7 @@ type ErrorInfoT struct {
 }
 
 func (c *ConnectionT) NewRows() RowsCacheT {
-	return RowsCacheT{cache: []byte{}, count: 0}
+	return RowsCacheT{series: map[int64][]CacheRowT{}, cache: []byte{}, count: 0}
 }
 
 func (r *RowsCacheT) Count() int {
@@ -72,84 +82,114 @@ func (r *RowsCacheT) Count() int {
 }
 
 func (r *RowsCacheT) Len() int {
-	return len(r.cache)
+	return len(r.series)
 }
 
 func (r *RowsCacheT) DataAddRow(seriesId int64, class byte, t int64, q uint32, value interface{}) error {
-	switch class {
-	case types.SimpleClass: // атомарный
-		tBytes8 := poolBytes8.Get().([]byte)
-		tBytes4 := poolBytes4.Get().([]byte)
-		body := poolBytes29.Get().([]byte)
-
-		// пакуем seriesId параметра
-		binary.BigEndian.PutUint64(tBytes8, uint64(seriesId))
-		copy(body[:8], tBytes8)
-
-		// базовый клас параметра
-		body[8] = 0
-
-		// метка времени
-		binary.BigEndian.PutUint64(tBytes8, uint64(t))
-		copy(body[9:17], tBytes8)
-
-		// значение
-		err := convVal.ValToBinaryAs(value, tBytes8)
-		if err != nil {
-			poolBytes8.Put(tBytes8)
-			poolBytes4.Put(tBytes4)
-			poolBytes29.Put(body)
-			return err
-		}
-		copy(body[17:25], tBytes8)
-
-		binary.BigEndian.PutUint32(tBytes4, q)
-
-		// признак качества
-		copy(body[25:29], tBytes4)
-
-		r.cache = append(r.cache, body...)
-
-		poolBytes8.Put(tBytes8)
-		poolBytes4.Put(tBytes4)
-		poolBytes29.Put(body)
-	case types.BlobClass: // BLOB
-		tBytes8 := poolBytes8.Get().([]byte)
-		tBytes4 := poolBytes4.Get().([]byte)
-		t4 := poolBytes4.Get().([]byte)
-		body := make([]byte, 21)
-
-		// пакуем seriesId параметра
-		binary.BigEndian.PutUint64(tBytes8, uint64(seriesId))
-		copy(body, tBytes8)
-
-		// базовый клас параметра
-		body[8] = 1
-
-		// метка времени
-		binary.BigEndian.PutUint64(tBytes8, uint64(t))
-		copy(body[9:17], tBytes8)
-
-		// значение
-		val := value.(string)
-		binary.BigEndian.PutUint32(t4, uint32(len(val)))
-		copy(body[17:21], t4)
-		body = append(body, val...)
-		// признак качества
-		binary.BigEndian.PutUint32(tBytes4, q)
-
-		body = append(body, tBytes4...)
-
-		r.cache = append(r.cache, body...)
-
-		poolBytes8.Put(tBytes8)
-		poolBytes4.Put(t4)
-	}
-	r.count++
+	r.series[seriesId] = append(r.series[seriesId], CacheRowT{
+		class: class,
+		t:     t,
+		q:     q,
+		value: value,
+	})
 	return nil
 }
 
+func (r *RowsCacheT) Encode() error {
+	defer func() {
+		r.series = make(map[int64][]CacheRowT)
+	}()
+
+	for seriesId, ts := range r.series {
+		for _, row := range ts {
+			switch row.class {
+			case types.SimpleClass: // атомарный
+				tBytes8 := poolBytes8.Get().([]byte)
+				tBytes4 := poolBytes4.Get().([]byte)
+				body := poolBytes29.Get().([]byte)
+
+				// пакуем seriesId параметра
+				binary.BigEndian.PutUint64(tBytes8, uint64(seriesId))
+				copy(body[:8], tBytes8)
+
+				// базовый клас параметра
+				body[8] = 0
+
+				// метка времени
+				binary.BigEndian.PutUint64(tBytes8, uint64(row.t))
+				copy(body[9:17], tBytes8)
+
+				// значение
+				err := convVal.ValToBinaryAs(row.value, tBytes8)
+				if err != nil {
+					poolBytes8.Put(tBytes8)
+					poolBytes4.Put(tBytes4)
+					poolBytes29.Put(body)
+					return err
+				}
+				copy(body[17:25], tBytes8)
+
+				binary.BigEndian.PutUint32(tBytes4, row.q)
+
+				// признак качества
+				copy(body[25:29], tBytes4)
+
+				r.cache = append(r.cache, body...)
+
+				poolBytes8.Put(tBytes8)
+				poolBytes4.Put(tBytes4)
+				poolBytes29.Put(body)
+			case types.BlobClass: // BLOB
+				tBytes8 := poolBytes8.Get().([]byte)
+				tBytes4 := poolBytes4.Get().([]byte)
+				t4 := poolBytes4.Get().([]byte)
+				body := make([]byte, 21)
+
+				// пакуем seriesId параметра
+				binary.BigEndian.PutUint64(tBytes8, uint64(seriesId))
+				copy(body, tBytes8)
+
+				// базовый клас параметра
+				body[8] = 1
+
+				// метка времени
+				binary.BigEndian.PutUint64(tBytes8, uint64(row.t))
+				copy(body[9:17], tBytes8)
+
+				// значение
+				val := row.value.(string)
+				binary.BigEndian.PutUint32(t4, uint32(len(val)))
+				copy(body[17:21], t4)
+				body = append(body, val...)
+				// признак качества
+				binary.BigEndian.PutUint32(tBytes4, row.q)
+
+				body = append(body, tBytes4...)
+
+				r.cache = append(r.cache, body...)
+
+				poolBytes8.Put(tBytes8)
+				poolBytes4.Put(t4)
+			}
+			r.count++
+		}
+	}
+
+	return nil
+}
+
+func (r *RowsCacheT) Sort() {
+	for _, ts := range r.series {
+		sort.Slice(ts, func(i, j int) bool { return ts[i].t < ts[j].t })
+	}
+}
+
 func (c *ConnectionT) DataAddRows(baseId int, r RowsCacheT) error {
+	errEncode := r.Encode()
+	if errEncode != nil {
+		return errEncode
+	}
+
 	errConnect := c.checkConnect()
 	if errConnect != nil {
 		return errConnect
@@ -160,6 +200,7 @@ func (c *ConnectionT) DataAddRows(baseId int, r RowsCacheT) error {
 	pck := sendFlow.GetPack()
 	c.cmd.Lock()
 	_, err := c.stream.Write(pck)
+	sendFlow.Free()
 	if err != nil {
 		c.cmd.Unlock()
 		return err
@@ -178,7 +219,7 @@ func (c *ConnectionT) DataAddRows(baseId int, r RowsCacheT) error {
 	c.cmd.Unlock()
 	return nil
 }
-func (c *ConnectionT) DataMathFunc(baseId int, seriesId int, min int64, max int64, algorithm int) (map[string]interface{}, error) {
+func (c *ConnectionT) DataMathFunc(baseId int, seriesId int, min int64, max int64, algorithm int) (any, error) {
 	errConnect := c.checkConnect()
 	if errConnect != nil {
 		return nil, errConnect
@@ -192,30 +233,21 @@ func (c *ConnectionT) DataMathFunc(baseId int, seriesId int, min int64, max int6
 	pck := sendFlow.GetPack()
 	c.cmd.Lock()
 	_, err := c.stream.Write(pck)
+	sendFlow.Free()
 	if err != nil {
 		c.cmd.Unlock()
 		return nil, err
 	}
 
-	status, err := c.stream.readAnswerCode()
-	if err != nil {
+	readBuf, errGetBuff := c.GetStreamBuf()
+	if errGetBuff != nil {
 		c.cmd.Unlock()
-		return nil, err
+		return nil, errGetBuff
 	}
-	if status != 0 {
-		errS := c.stream.getError()
-		c.cmd.Unlock()
-		return nil, errS
-	}
-
-	inPck, err := c.stream.readAnswer()
-	if err != nil {
-		c.cmd.Unlock()
-		return nil, err
-	}
+	defer readBuf.Free()
 	c.cmd.Unlock()
-	readBuf := flow_buf.NewFlowFromBuf(*inPck)
-	ret, ok := readBuf.GetMap()
+
+	ret, ok := readBuf.GetString()
 	if !ok {
 		return nil, errors.New("invalid result")
 	}
@@ -223,6 +255,11 @@ func (c *ConnectionT) DataMathFunc(baseId int, seriesId int, min int64, max int6
 }
 
 func (c *ConnectionT) DataAddRowCache(baseId int, r RowsCacheT) (int, error) {
+	errEncode := r.Encode()
+	if errEncode != nil {
+		return 0, errEncode
+	}
+
 	errConnect := c.checkConnect()
 	if errConnect != nil {
 		return 0, errConnect
@@ -233,29 +270,20 @@ func (c *ConnectionT) DataAddRowCache(baseId int, r RowsCacheT) (int, error) {
 	pck := sendFlow.GetPack()
 	c.cmd.Lock()
 	_, err := c.stream.Write(pck)
+	sendFlow.Free()
 	if err != nil {
 		c.cmd.Unlock()
 		return 0, err
 	}
 
-	status, err := c.stream.readAnswerCode()
-	if err != nil {
+	readBuf, errGetBuff := c.GetStreamBuf()
+	if errGetBuff != nil {
 		c.cmd.Unlock()
-		return 0, err
+		return 0, errGetBuff
 	}
-	if status != 0 {
-		errS := c.stream.getError()
-		c.cmd.Unlock()
-		return 0, errS
-	}
-
-	inPck, err := c.stream.readAnswer()
-	if err != nil {
-		c.cmd.Unlock()
-		return 0, err
-	}
+	defer readBuf.Free()
 	c.cmd.Unlock()
-	readBuf := flow_buf.NewFlowFromBuf(*inPck)
+
 	count, _ := readBuf.GetInt()
 
 	return count, nil
@@ -305,6 +333,7 @@ func (c *ConnectionT) DataAddRow(baseId int, seriesId int, class byte, t int64, 
 	pck := sendFlow.GetPack()
 	c.cmd.Lock()
 	_, err := c.stream.Write(pck)
+	sendFlow.Free()
 	if err != nil {
 		c.cmd.Unlock()
 		return err
@@ -335,33 +364,20 @@ func (c *ConnectionT) DataGetLastValue(baseId int, seriesId int, class int) (*Ro
 	pck := sendFlow.GetPack()
 	c.cmd.Lock()
 	_, err := c.stream.Write(pck)
+	sendFlow.Free()
 	if err != nil {
 		c.cmd.Unlock()
 		return nil, err
 	}
 
-	status, err := c.stream.readAnswerCode()
-	if err != nil {
+	readBuf, errGetBuff := c.GetStreamBuf()
+	if errGetBuff != nil {
 		c.cmd.Unlock()
-		return nil, err
+		return nil, errGetBuff
 	}
-	if status != 0 {
-		errS := c.stream.getError()
-		c.cmd.Unlock()
-		return nil, errS
-	}
-	i, err := c.stream.GetLenPacket()
-	if err != nil {
-		c.cmd.Unlock()
-		return nil, err
-	}
-	pckAns := make([]byte, i)
-	_, err = c.stream.GetBuff(&pckAns, i)
+	defer readBuf.Free()
 	c.cmd.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	readBuf := flow_buf.NewFlowFromBuf(pckAns)
+
 	Time, okT := readBuf.GetInt64() // time
 	if !okT {
 		return nil, errors.New("invalid rec format")
@@ -410,33 +426,20 @@ func (c *ConnectionT) DataGetValueAtTime(baseId int, seriesId int, t int64, clas
 	pck := sendFlow.GetPack()
 	c.cmd.Lock()
 	_, err := c.stream.Write(pck)
+	sendFlow.Free()
 	if err != nil {
 		c.cmd.Unlock()
 		return nil, err
 	}
 
-	status, err := c.stream.readAnswerCode()
-	if err != nil {
+	readBuf, errGetBuff := c.GetStreamBuf()
+	if errGetBuff != nil {
 		c.cmd.Unlock()
-		return nil, err
+		return nil, errGetBuff
 	}
-	if status != 0 {
-		errS := c.stream.getError()
-		c.cmd.Unlock()
-		return nil, errS
-	}
-	i, err := c.stream.GetLenPacket()
-	if err != nil {
-		c.cmd.Unlock()
-		return nil, err
-	}
-	pckAns := make([]byte, i)
-	_, err = c.stream.GetBuff(&pckAns, i)
+	defer readBuf.Free()
 	c.cmd.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	readBuf := flow_buf.NewFlowFromBuf(pckAns)
+
 	Time, okT := readBuf.GetInt64() // time
 	if !okT {
 		return nil, errors.New("invalid rec format")
@@ -483,34 +486,21 @@ func (c *ConnectionT) DataGetCP(baseId int, seriesId int, t int64) (string, erro
 	pck := sendFlow.GetPack()
 	c.cmd.Lock()
 	_, err := c.stream.Write(pck)
+	sendFlow.Free()
 	if err != nil {
 		c.cmd.Unlock()
 		return "", err
 	}
 
-	status, err := c.stream.readAnswerCode()
-	if err != nil {
+	readBuf, errGetBuff := c.GetStreamBuf()
+	if errGetBuff != nil {
 		c.cmd.Unlock()
-		return "", err
+		return "", errGetBuff
 	}
-	if status != 0 {
-		errS := c.stream.getError()
-		c.cmd.Unlock()
-		return "", errS
-	}
+	defer readBuf.Free()
 
-	i, err := c.stream.GetLenPacket()
-	if err != nil {
-		c.cmd.Unlock()
-		return "", err
-	}
-	pckAns := make([]byte, i)
-	_, err = c.stream.GetBuff(&pckAns, i)
 	c.cmd.Unlock()
-	if err != nil {
-		return "", err
-	}
-	readBuf := flow_buf.NewFlowFromBuf(pckAns)
+
 	CP, okStartCP := readBuf.GetString()
 	if !okStartCP {
 		return "", errors.New("invalid data")
@@ -537,34 +527,20 @@ func (c *ConnectionT) DataGetRangeDirection(baseId int, seriesId int, class int,
 	pck := sendFlow.GetPack()
 	c.cmd.Lock()
 	_, err := c.stream.Write(pck)
+	sendFlow.Free()
 	if err != nil {
 		c.cmd.Unlock()
 		return nil, err
 	}
 
-	status, err := c.stream.readAnswerCode()
-	if err != nil {
+	readBuf, errGetBuff := c.GetStreamBuf()
+	if errGetBuff != nil {
 		c.cmd.Unlock()
-		return nil, err
+		return nil, errGetBuff
 	}
-	if status != 0 {
-		errS := c.stream.getError()
-		c.cmd.Unlock()
-		return nil, errS
-	}
-
-	i, err := c.stream.GetLenPacket()
-	if err != nil {
-		c.cmd.Unlock()
-		return nil, err
-	}
-	pckAns := make([]byte, i)
-	_, err = c.stream.GetBuff(&pckAns, i)
+	defer readBuf.Free()
 	c.cmd.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	readBuf := flow_buf.NewFlowFromBuf(pckAns)
+
 	rec := RecWitchCP{}
 	StartCP, okStartCP := readBuf.GetString()
 	if !okStartCP {
@@ -637,34 +613,20 @@ func (c *ConnectionT) DataGetFromCP(baseId int, cp string, direct byte, limit in
 	pck := sendFlow.GetPack()
 	c.cmd.Lock()
 	_, err := c.stream.Write(pck)
+	sendFlow.Free()
 	if err != nil {
 		c.cmd.Unlock()
 		return nil, err
 	}
 
-	status, err := c.stream.readAnswerCode()
-	if err != nil {
+	readBuf, errGetBuff := c.GetStreamBuf()
+	if errGetBuff != nil {
 		c.cmd.Unlock()
-		return nil, err
+		return nil, errGetBuff
 	}
-	if status != 0 {
-		errS := c.stream.getError()
-		c.cmd.Unlock()
-		return nil, errS
-	}
-
-	i, err := c.stream.GetLenPacket()
-	if err != nil {
-		c.cmd.Unlock()
-		return nil, err
-	}
-	pckAns := make([]byte, i)
-	_, err = c.stream.GetBuff(&pckAns, i)
+	defer readBuf.Free()
 	c.cmd.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	readBuf := flow_buf.NewFlowFromBuf(pckAns)
+
 	rec := RecWitchCP{}
 	StartCP, okStartCP := readBuf.GetString()
 	if !okStartCP {
@@ -740,35 +702,20 @@ func (c *ConnectionT) DataGetRangeFromCP(baseId int, cp string, direct byte, lim
 	pck := sendFlow.GetPack()
 	c.cmd.Lock()
 	_, err := c.stream.Write(pck)
+	sendFlow.Free()
 	if err != nil {
 		c.cmd.Unlock()
 		return nil, err
 	}
 
-	status, err := c.stream.readAnswerCode()
-	if err != nil {
+	readBuf, errGetBuff := c.GetStreamBuf()
+	if errGetBuff != nil {
 		c.cmd.Unlock()
-		return nil, err
+		return nil, errGetBuff
 	}
-	if status != 0 {
-		errS := c.stream.getError()
-		c.cmd.Unlock()
-		return nil, errS
-	}
-
-	i, err := c.stream.GetLenPacket()
-	if err != nil {
-		c.cmd.Unlock()
-		return nil, err
-	}
-	pckAns := make([]byte, i)
-	_, err = c.stream.GetBuff(&pckAns, i)
-	if err != nil {
-		c.cmd.Unlock()
-		return nil, err
-	}
+	defer readBuf.Free()
 	c.cmd.Unlock()
-	readBuf := flow_buf.NewFlowFromBuf(pckAns)
+
 	rec := RecWitchCP{}
 	StartCP, okStartCP := readBuf.GetString()
 	if !okStartCP {
@@ -840,6 +787,7 @@ func (c *ConnectionT) DataDeleteRow(baseId int, seriesId int, t int64) error {
 	pck := sendFlow.GetPack()
 
 	_, err := c.stream.Write(pck)
+	sendFlow.Free()
 	if err != nil {
 		return err
 	}
@@ -868,33 +816,20 @@ func (c *ConnectionT) DataDeleteRows(baseId int, seriesId int, TimeStart int64, 
 	pck := sendFlow.GetPack()
 	c.cmd.Lock()
 	_, err := c.stream.Write(pck)
+	sendFlow.Free()
 	if err != nil {
 		c.cmd.Unlock()
 		return 0, err
 	}
 
-	status, err := c.stream.readAnswerCode()
-	if err != nil {
+	readBuf, errGetBuff := c.GetStreamBuf()
+	if errGetBuff != nil {
 		c.cmd.Unlock()
-		return 0, err
+		return 0, errGetBuff
 	}
-	if status != 0 {
-		errS := c.stream.getError()
-		c.cmd.Unlock()
-		return 0, errS
-	}
-	i, err := c.stream.GetLenPacket()
-	if err != nil {
-		c.cmd.Unlock()
-		return 0, err
-	}
-	pckAns := make([]byte, i)
-	_, err = c.stream.GetBuff(&pckAns, i)
+	defer readBuf.Free()
 	c.cmd.Unlock()
-	if err != nil {
-		return 0, err
-	}
-	readBuf := flow_buf.NewFlowFromBuf(pckAns)
+
 	count, okCount := readBuf.GetInt()
 	if !okCount {
 		return 0, errors.New("invalid data")
@@ -914,34 +849,21 @@ func (c *ConnectionT) DataGetBoundary(baseId int, seriesId int) (*BoundaryT, err
 	pck := sendFlow.GetPack()
 	c.cmd.Lock()
 	_, err := c.stream.Write(pck)
+	sendFlow.Free()
 	if err != nil {
 		c.cmd.Unlock()
 		return nil, err
 	}
 
-	status, err := c.stream.readAnswerCode()
-	if err != nil {
+	readBuf, errGetBuff := c.GetStreamBuf()
+	if errGetBuff != nil {
 		c.cmd.Unlock()
-		return nil, err
+		return nil, errGetBuff
 	}
-	if status != 0 {
-		errS := c.stream.getError()
-		c.cmd.Unlock()
-		return nil, errS
-	}
+	defer readBuf.Free()
 
-	i, err := c.stream.GetLenPacket()
-	if err != nil {
-		c.cmd.Unlock()
-		return nil, err
-	}
-	pckAns := make([]byte, i)
-	_, err = c.stream.GetBuff(&pckAns, i)
 	c.cmd.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	readBuf := flow_buf.NewFlowFromBuf(pckAns)
+
 	min, okMin := readBuf.GetInt64()
 	if !okMin {
 		return nil, errors.New("invalid data")
@@ -983,34 +905,20 @@ func (c *ConnectionT) GetAddRowCacheErrors() ([]ErrorInfoT, error) {
 	pck := sendFlow.GetPack()
 	c.cmd.Lock()
 	_, err := c.stream.Write(pck)
+	sendFlow.Free()
 	if err != nil {
 		c.cmd.Unlock()
 		return nil, err
 	}
 
-	state, err := c.stream.readAnswerCode()
-	if err != nil {
+	readBuf, errGetBuff := c.GetStreamBuf()
+	if errGetBuff != nil {
 		c.cmd.Unlock()
-		return nil, err
+		return nil, errGetBuff
 	}
-	if state == 1 {
-		errS := c.stream.getError()
-		c.cmd.Unlock()
-		return nil, errS
-	}
-
-	lenPack, err := c.stream.GetLenPacket()
-	if err != nil {
-		c.cmd.Unlock()
-		return nil, err
-	}
-	pckAns := make([]byte, lenPack)
-	_, err = c.stream.GetBuff(&pckAns, lenPack)
+	defer readBuf.Free()
 	c.cmd.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	readBuf := flow_buf.NewFlowFromBuf(pckAns)
+
 	count, _ := readBuf.GetInt()
 	var ret = make([]ErrorInfoT, count)
 

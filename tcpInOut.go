@@ -1,7 +1,6 @@
 package avads_db_connector
 
 import (
-	"avads_db_connector/flow_buf"
 	"bufio"
 	"errors"
 	"fmt"
@@ -9,6 +8,8 @@ import (
 	"net"
 	"os"
 	"time"
+
+	"github.com/AVADS-Soft/avads_db_connector/flow_buf"
 )
 
 type LteDBInOutTCP struct {

@@ -1,7 +1,6 @@
 package avads_db_connector
 
 import (
-	"avads_db_connector/flow_buf"
 	"crypto/md5"
 	"encoding/binary"
 	"errors"
@@ -10,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/AVADS-Soft/avads_db_connector/flow_buf"
 )
 
 const (
@@ -49,6 +50,15 @@ const (
 	DataAddRows           = 32
 	DataGetLastValue      = 33
 	GetAddRowCacheErrors  = 35
+	BaseRepair            = 36
+
+	GroupAdd        = 40
+	GroupUpdate     = 41
+	GroupDelete     = 42
+	GroupGetAll     = 43
+	GroupGetRefs    = 44
+	GroupAddRefs    = 45
+	GroupRemoveRefs = 46
 )
 
 const (
@@ -263,4 +273,27 @@ func (c *ConnectionT) Close() error {
 	defer c.Unlock()
 	c.stream.IsConnect = false
 	return c.stream.Close()
+}
+
+func (c *ConnectionT) GetStreamBuf() (*flow_buf.FlowBufT, error) {
+	state, err := c.stream.readAnswerCode()
+	if err != nil {
+		return nil, err
+	}
+	if state == 1 {
+		errS := c.stream.getError()
+		return nil, errS
+	}
+
+	i, err := c.stream.GetLenPacket()
+	if err != nil {
+		return nil, err
+	}
+	pckAns := make([]byte, i)
+	_, err = c.stream.GetBuff(&pckAns, i)
+	if err != nil {
+		return nil, err
+	}
+	readBuf := flow_buf.NewFlowFromBuf(pckAns)
+	return &readBuf, nil
 }

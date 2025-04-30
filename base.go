@@ -3,7 +3,7 @@ package avads_db_connector
 import (
 	"time"
 
-	"avads_db_connector/flow_buf"
+	"github.com/AVADS-Soft/avads_db_connector/flow_buf"
 )
 
 const (

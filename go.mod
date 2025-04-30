@@ -1,3 +1,3 @@
-module avads_db_connector
+module github.com/AVADS-Soft/avads_db_connector
 
 go 1.20

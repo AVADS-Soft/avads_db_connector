@@ -1,6 +1,6 @@
 package avads_db_connector
 
-import "avads_db_connector/flow_buf"
+import "github.com/AVADS-Soft/avads_db_connector/flow_buf"
 
 type SeriesT struct {
 	Name        string   `json:"name"`              // Программное имя ряда мах len (255)

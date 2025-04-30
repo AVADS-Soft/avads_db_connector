@@ -1,6 +1,7 @@
 package flow_buf
 
 import (
+	"errors"
 	"sync"
 )
 
@@ -15,35 +16,41 @@ const (
 )
 
 type FlowBufT struct {
-	buf      []byte // Буфер с данными
-	l        int    // Длинна виртуального буфера
-	stepSize int    // Размер сегмента буфера
-	offset   int    // Указатель виртуального внутри буфера
-	pacType  int8   // Тип пакета для кодирования
-	empty    bool
+	buf      *[]byte // Буфер с данными
+	l        int     // Длинна виртуального буфера
+	stepSize int     // Размер сегмента буфера
+	offset   int     // Указатель виртуального внутри буфера
+	pacType  int8    // Тип пакета для кодирования
+	empty    bool    // Признак того что пакет пустой
 }
+
+var poolBuffer sync.Pool
 
 var poolBytes26 = sync.Pool{
 	New: func() interface{} {
-		return make([]byte, 26)
+		b := make([]byte, 26)
+		return &b
 	},
 }
 
 var poolBytes8 = sync.Pool{
 	New: func() interface{} {
-		return make([]byte, 8)
+		b := make([]byte, 8)
+		return &b
 	},
 }
 
 var poolBytes4 = sync.Pool{
 	New: func() interface{} {
-		return make([]byte, 4)
+		b := make([]byte, 4)
+		return &b
 	},
 }
 
 var poolBytes2 = sync.Pool{
 	New: func() interface{} {
-		return make([]byte, 2)
+		b := make([]byte, 2)
+		return &b
 	},
 }
 
@@ -56,11 +63,26 @@ func NewFlow(pacType int, size int) FlowBufT {
 	if size < 0 {
 		size = 1000
 	}
+
+	buf, ok := poolBuffer.Get().(*[]byte)
+	extSize := size + 5
+	if !ok {
+		b := make([]byte, extSize)
+		buf = &b
+	} else {
+		if len(*buf) < extSize {
+			b := make([]byte, extSize)
+			buf = &b
+		} else {
+			extSize = len(*buf)
+		}
+	}
+
 	FlowBuf := FlowBufT{
 		pacType:  int8(pacType),
-		buf:      make([]byte, size+5),
+		buf:      buf,
 		offset:   5,
-		l:        size + 5,
+		l:        extSize,
 		stepSize: size,
 	}
 	if size == 0 {
@@ -72,18 +94,18 @@ func NewFlow(pacType int, size int) FlowBufT {
 func NewFlowFromBuf(b []byte) FlowBufT {
 	FlowBuf := FlowBufT{
 		pacType: 0,
-		buf:     b,
+		buf:     &b,
 		offset:  0,
 	}
 	return FlowBuf
 }
 
 func (b *FlowBufT) SetBuf(buf *[]byte) {
-	b.buf = *buf
+	b.buf = buf
 }
 
 func (b *FlowBufT) GetBuf() *[]byte {
-	return &b.buf
+	return b.buf
 }
 
 func (b *FlowBufT) GetPack() []byte {
@@ -92,61 +114,62 @@ func (b *FlowBufT) GetPack() []byte {
 		if b.pacType < 0 {
 			offset = 1
 		}
-		b.buf[0] = byte(b.pacType)
-		if b.empty {
-
-		}
-		lenPack := poolBytes4.Get().([]byte)
-		Int32ToBytesSliceAs(int32(b.offset-5), &lenPack)
-		copy(b.buf[1:5], lenPack)
+		(*b.buf)[0] = byte(b.pacType)
+		lenPack := poolBytes4.Get().(*[]byte)
+		Int32ToBytesSliceAs(int32(b.offset-5), lenPack)
+		copy((*b.buf)[1:5], *lenPack)
 		poolBytes4.Put(lenPack)
-		return b.buf[offset:b.offset]
+		return (*b.buf)[offset:b.offset]
 	}
 	return []byte{byte(b.pacType)}
+}
+
+func (b *FlowBufT) Free() {
+	poolBuffer.Put(b.buf)
 }
 
 func (b *FlowBufT) extSize(size int) {
 	if size > b.l {
 		extSize := b.stepSize
 		if size > b.stepSize {
-			extSize = size
+			extSize = size * 100
 		}
-		b.buf = append(b.buf, make([]byte, extSize)...)
+		*b.buf = append(*b.buf, make([]byte, extSize)...)
 		b.l += extSize
 	}
 }
 
 func (b *FlowBufT) AddString(val string) {
 	l := len(val)
-	lenPack := poolBytes4.Get().([]byte)
-	Int32ToBytesSliceAs(int32(l), &lenPack)
+	lenPack := poolBytes4.Get().(*[]byte)
+	Int32ToBytesSliceAs(int32(l), lenPack)
 	newOffset := b.offset + 4
 	b.extSize(newOffset + l)
-	copy(b.buf[b.offset:newOffset], lenPack)
+	copy((*b.buf)[b.offset:newOffset], *lenPack)
 	b.offset = newOffset
 	poolBytes4.Put(lenPack)
 	if l == 0 {
 		return
 	}
-	copy(b.buf[b.offset:b.offset+l], val)
+	copy((*b.buf)[b.offset:b.offset+l], val)
 	b.offset += l
 }
 
 func (b *FlowBufT) GetString() (string, bool) {
 	newOffset := b.offset + 4
-	if len(b.buf) < newOffset {
+	if len(*b.buf) < newOffset {
 		return "", false
 	}
-	lenString := int(ByteSliceToInt32(b.buf[b.offset:newOffset]))
+	lenString := int(ByteSliceToInt32((*b.buf)[b.offset:newOffset]))
 	b.offset = newOffset
-	if len(b.buf) < b.offset+lenString {
+	if len(*b.buf) < b.offset+lenString {
 		return "", false
 	}
-	if lenString == 1 && b.buf[b.offset] == 0 {
+	if lenString == 1 && (*b.buf)[b.offset] == 0 {
 		b.offset += lenString
 		return "", true
 	}
-	ret := string(b.buf[b.offset : b.offset+lenString])
+	ret := string((*b.buf)[b.offset : b.offset+lenString])
 	b.offset += lenString
 	return ret, true
 }
@@ -154,19 +177,19 @@ func (b *FlowBufT) GetString() (string, bool) {
 func (b *FlowBufT) AddInt(val int) {
 	newOffset := b.offset + 8
 	b.extSize(newOffset)
-	t := poolBytes8.Get().([]byte)
-	Int64ToBinSliceAs(int64(val), &t)
-	copy(b.buf[b.offset:newOffset], t)
+	t := poolBytes8.Get().(*[]byte)
+	Int64ToBinSliceAs(int64(val), t)
+	copy((*b.buf)[b.offset:newOffset], *t)
 	b.offset = newOffset
 	poolBytes8.Put(t)
 }
 
 func (b *FlowBufT) GetInt() (int, bool) {
 	newOffset := b.offset + 8
-	if len(b.buf) < newOffset {
+	if len(*b.buf) < newOffset {
 		return 0, false
 	}
-	ret := int(ByteSliceToInt64(b.buf[b.offset:newOffset]))
+	ret := int(ByteSliceToInt64((*b.buf)[b.offset:newOffset]))
 	b.offset = newOffset
 	return ret, true
 }
@@ -174,18 +197,18 @@ func (b *FlowBufT) GetInt() (int, bool) {
 func (b *FlowBufT) AddInt16(val int16) {
 	newOffset := b.offset + 2
 	b.extSize(newOffset)
-	t := poolBytes2.Get().([]byte)
-	Int16ToBytesSliceAs(val, &t)
-	copy(b.buf[b.offset:newOffset], t)
+	t := poolBytes2.Get().(*[]byte)
+	Int16ToBytesSliceAs(val, t)
+	copy((*b.buf)[b.offset:newOffset], *t)
 	b.offset = newOffset
 	poolBytes2.Put(t)
 }
 func (b *FlowBufT) GetInt16() (int16, bool) {
 	newOffset := b.offset + 2
-	if len(b.buf) < newOffset {
+	if len(*b.buf) < newOffset {
 		return 0, false
 	}
-	ret := ByteSliceToInt16(b.buf[b.offset:newOffset])
+	ret := ByteSliceToInt16((*b.buf)[b.offset:newOffset])
 	b.offset = newOffset
 	return ret, true
 }
@@ -193,19 +216,19 @@ func (b *FlowBufT) GetInt16() (int16, bool) {
 func (b *FlowBufT) AddInt32(val int32) {
 	newOffset := b.offset + 4
 	b.extSize(newOffset)
-	t := poolBytes4.Get().([]byte)
-	Int32ToBytesSliceAs(val, &t)
-	copy(b.buf[b.offset:newOffset], t)
+	t := poolBytes4.Get().(*[]byte)
+	Int32ToBytesSliceAs(val, t)
+	copy((*b.buf)[b.offset:newOffset], *t)
 	b.offset = newOffset
 	poolBytes4.Put(t)
 }
 
 func (b *FlowBufT) GetInt32() (int32, bool) {
 	newOffset := b.offset + 4
-	if len(b.buf) < newOffset {
+	if len(*b.buf) < newOffset {
 		return 0, false
 	}
-	ret := ByteSliceToInt32(b.buf[b.offset:newOffset])
+	ret := ByteSliceToInt32((*b.buf)[b.offset:newOffset])
 	b.offset = newOffset
 	return ret, true
 }
@@ -216,10 +239,10 @@ func (b *FlowBufT) AddInt64(val int64) {
 
 func (b *FlowBufT) GetInt64() (int64, bool) {
 	newOffset := b.offset + 8
-	if len(b.buf) < newOffset {
+	if len(*b.buf) < newOffset {
 		return 0, false
 	}
-	ret := ByteSliceToInt64(b.buf[b.offset:newOffset])
+	ret := ByteSliceToInt64((*b.buf)[b.offset:newOffset])
 	b.offset = newOffset
 	return ret, true
 }
@@ -230,10 +253,10 @@ func (b *FlowBufT) AddUInt64(val uint64) {
 
 func (b *FlowBufT) GetUInt64() (uint64, bool) {
 	newOffset := b.offset + 8
-	if len(b.buf) < newOffset {
+	if len(*b.buf) < newOffset {
 		return 0, false
 	}
-	ret := ByteSliceToInt64(b.buf[b.offset:newOffset])
+	ret := ByteSliceToInt64((*b.buf)[b.offset:newOffset])
 	b.offset = newOffset
 	return uint64(ret), true
 }
@@ -241,19 +264,19 @@ func (b *FlowBufT) GetUInt64() (uint64, bool) {
 func (b *FlowBufT) AddFloat(val float64) {
 	newOffset := b.offset + 8
 	b.extSize(newOffset)
-	t := poolBytes8.Get().([]byte)
-	Float64ToBytesAs(val, &t)
-	copy(b.buf[b.offset:newOffset], t)
+	t := poolBytes8.Get().(*[]byte)
+	Float64ToBytesAs(val, t)
+	copy((*b.buf)[b.offset:newOffset], *t)
 	b.offset = newOffset
 	poolBytes8.Put(t)
 }
 
 func (b *FlowBufT) GetFloat() (float64, bool) {
 	newOffset := b.offset + 8
-	if len(b.buf) < newOffset {
+	if len(*b.buf) < newOffset {
 		return 0, false
 	}
-	ret := ByteSliceToFloat64(b.buf[b.offset:newOffset])
+	ret := ByteSliceToFloat64((*b.buf)[b.offset:newOffset])
 	b.offset = newOffset
 	return ret, true
 }
@@ -262,17 +285,17 @@ func (b *FlowBufT) AddBytes(val []byte) {
 	newOffset := b.offset + len(val)
 	b.extSize(newOffset)
 
-	copy(b.buf[b.offset:newOffset], val)
+	copy((*b.buf)[b.offset:newOffset], val)
 	b.offset = newOffset
 }
 
 func (b *FlowBufT) GetBytes(length int) ([]byte, bool) {
 	newOffset := b.offset + length
-	if len(b.buf) < newOffset {
+	if len(*b.buf) < newOffset {
 		return nil, false
 	}
 	ret := make([]byte, length)
-	copy(ret, b.buf[b.offset:newOffset])
+	copy(ret, (*b.buf)[b.offset:newOffset])
 	b.offset = newOffset
 	return ret, true
 }
@@ -280,15 +303,15 @@ func (b *FlowBufT) GetBytes(length int) ([]byte, bool) {
 func (b *FlowBufT) AddByte(val byte) {
 	newOffset := b.offset + 1
 	b.extSize(newOffset)
-	b.buf[b.offset] = val
+	(*b.buf)[b.offset] = val
 	b.offset = newOffset
 }
 
 func (b *FlowBufT) GetByte() (byte, bool) {
-	if len(b.buf) < b.offset+1 {
+	if len(*b.buf) < b.offset+1 {
 		return 0, false
 	}
-	ret := b.buf[b.offset]
+	ret := (*b.buf)[b.offset]
 	b.offset += 1
 	return ret, true
 }
@@ -300,16 +323,16 @@ func (b *FlowBufT) AddBool(val bool) {
 	}
 	newOffset := b.offset + 1
 	b.extSize(newOffset)
-	b.buf[b.offset] = v
+	(*b.buf)[b.offset] = v
 	b.offset = newOffset
 }
 
 func (b *FlowBufT) GetBool() (bool, bool) {
 	newOffset := b.offset + 1
-	if len(b.buf) < newOffset {
+	if len(*b.buf) < newOffset {
 		return false, false
 	}
-	ret := b.buf[b.offset:newOffset]
+	ret := (*b.buf)[b.offset:newOffset]
 	b.offset = newOffset
 	if ret[0] == 0 {
 		return false, true
@@ -424,4 +447,96 @@ func (b *FlowBufT) GetMap() (map[string]interface{}, bool) {
 	}
 
 	return ret, true
+}
+
+func (b *FlowBufT) GetAny() (interface{}, bool) {
+	typ, okTyp := b.GetInt()
+	if !okTyp {
+		return nil, false
+	}
+	switch typ {
+	case String: // string
+		v, okV := b.GetString()
+		if !okV {
+			return nil, false
+		}
+		return v, true
+	case Int:
+		v, okV := b.GetInt()
+		if !okV {
+			return nil, false
+		}
+		return v, true
+	case Float:
+		v, okV := b.GetFloat()
+		if !okV {
+			return nil, false
+		}
+		return v, true
+	case Bool:
+		v, okV := b.GetBool()
+		if !okV {
+			return nil, false
+		}
+		return v, true
+	case Byte:
+		v, okV := b.GetByte()
+		if !okV {
+			return nil, false
+		}
+		return v, true
+	case Map:
+		v, okV := b.GetMap()
+		if !okV {
+			return nil, false
+		}
+		return v, true
+	case Bytes:
+		c, okC := b.GetInt()
+		if !okC {
+			return nil, false
+		}
+		v, okV := b.GetBytes(c)
+		if !okV {
+			return nil, false
+		}
+		return v, true
+	}
+	return nil, false
+}
+
+func (b *FlowBufT) AddAny(v interface{}) error {
+	switch val := v.(type) {
+	case string:
+		b.AddInt(String) // string
+		b.AddString(val)
+	case int:
+		b.AddInt(Int) // int
+		b.AddInt(val)
+	case int64:
+		b.AddInt(Int) // int
+		b.AddInt(int(val))
+	case float64:
+		b.AddInt(Float) // float
+		b.AddFloat(val)
+	case float32:
+		b.AddInt(Float) // float
+		b.AddFloat(float64(val))
+	case bool:
+		b.AddInt(Bool) // bool
+		b.AddBool(val)
+	case byte:
+		b.AddInt(Byte) // byte
+		b.AddByte(val)
+	case map[string]interface{}:
+		b.AddInt(Map) // map[string]interface{}
+		b.AddMap(val)
+	case []byte:
+		b.AddInt(Bytes) // []byte
+		b.AddInt(len(val))
+		b.AddBytes(val)
+	default:
+		return errors.New("invalid type")
+	}
+	return nil
 }

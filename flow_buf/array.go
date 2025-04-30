@@ -1,12 +1,13 @@
 package flow_buf
 
 import (
-	"avads_db_connector/types"
 	"bytes"
 	"encoding/binary"
 	"errors"
 	"math"
 	"strings"
+
+	"github.com/AVADS-Soft/avads_db_connector/types"
 )
 
 type ConvertT struct {

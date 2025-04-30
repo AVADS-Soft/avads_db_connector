@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"avads_db_connector/types"
+	"github.com/AVADS-Soft/avads_db_connector/types"
 )
 
 func TestTCPFails(t *testing.T) {
@@ -18,7 +18,7 @@ func TestTCPFails(t *testing.T) {
 		t.Fatal("invalid connection reaction")
 	}
 
-	conn := NewConnection("127.0.0.1", "7777", "adminz", "adminz")
+	conn := NewConnection("10.0.1.33", "7777", "adminz", "adminz")
 
 	conn.TimeOut = tm
 	errConnect := conn.Connect()
@@ -26,7 +26,7 @@ func TestTCPFails(t *testing.T) {
 		t.Fatal("invalid connection reaction")
 	}
 
-	conn = NewConnection("127.0.0.1", "7777", "admin", "admin")
+	conn = NewConnection("10.0.1.33", "7777", "admin", "admin")
 
 	conn.TimeOut = tm
 	errConnect = conn.Connect()
