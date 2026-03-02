@@ -83,6 +83,9 @@ type ConnectionT struct {
 
 	Reconnect ReconnectT
 	stream    LteDBInOutTCP
+
+	OpenBaseList map[int]string
+	TryBaseList  map[int]string
 }
 
 type ReconnectT struct {
@@ -252,10 +255,10 @@ func (c *ConnectionT) ReConnect() error {
 	}
 	atomic.StoreInt64(&c.Reconnect.State, 1)
 	//go func() {
-	for id, name := range OpenBaseList {
+	for id, name := range c.OpenBaseList {
 		c.OpenBase(id, name)
 	}
-	for id, name := range TryBaseList {
+	for id, name := range c.TryBaseList {
 		c.OpenBase(id, name)
 	}
 	atomic.StoreInt64(&c.Reconnect.State, 0)

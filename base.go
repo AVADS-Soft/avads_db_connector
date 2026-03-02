@@ -39,9 +39,6 @@ const (
 	LoopDuration = 2
 )
 
-var OpenBaseList = map[int]string{}
-var TryBaseList = map[int]string{}
-
 // GetBaseList получение списка баз
 func (c *ConnectionT) GetBaseList() (*[]BaseT, error) {
 	errConnect := c.checkConnect()
@@ -230,12 +227,11 @@ func (c *ConnectionT) UpdateBase(baseName string, base BaseT) error {
 		return errS
 	}
 	c.cmd.Unlock()
-	for i, v := range OpenBaseList {
+	for i, v := range c.OpenBaseList {
 		if baseName == v {
-			OpenBaseList[i] = base.Name
+			c.OpenBaseList[i] = base.Name
 		}
 	}
-
 	return nil
 }
 
@@ -281,7 +277,7 @@ func (c *ConnectionT) AddBase(base BaseT) error {
 
 // OpenBase подключение к базе
 func (c *ConnectionT) OpenBase(id int, name string) error {
-	TryBaseList[id] = name
+	c.TryBaseList[id] = name
 	if c.Reconnect.State == 0 {
 		errConnect := c.checkConnect()
 		if errConnect != nil {
@@ -310,8 +306,8 @@ func (c *ConnectionT) OpenBase(id int, name string) error {
 		return errS
 	}
 	c.cmd.Unlock()
-	delete(TryBaseList, id)
-	OpenBaseList[id] = name
+	delete(c.TryBaseList, id)
+	c.OpenBaseList[id] = name
 	return nil
 }
 
@@ -342,6 +338,6 @@ func (c *ConnectionT) CloseBase(id int) error {
 		return errS
 	}
 	c.cmd.Unlock()
-	delete(OpenBaseList, id)
+	delete(c.OpenBaseList, id)
 	return nil
 }
